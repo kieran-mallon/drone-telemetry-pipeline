@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same branch cancels the run already in flight.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast feedback: everything that needs no Docker, in well under a minute.
+  # Kept separate from the integration job so a type error is not hidden behind
+  # a two minute container pull.
+  check:
+    name: Typecheck, lint and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      # Catches a runtime import of a devDependency, which typecheck cannot see
+      # (the package is installed in development) and the tests cannot see
+      # (they run with everything installed). It is only visible at the
+      # boundary between the dependency graph and the deployment, and it shows
+      # up as a crash-looping container.
+      - name: Runtime dependency check
+        run: npm run check:deps
+
+      # Proves the deployable artefact actually builds and exports a handler.
+      # A bundling mistake is invisible until deploy time otherwise.
+      - name: Build the Lambda bundle
+        run: npm run package:lambda
+
+      - name: Verify the bundled handler is discoverable
+        env:
+          DATABASE_URL: postgres://ci:ci@localhost:5432/ci
+        run: |
+          node -e "
+            const { handler } = require('./dist-lambda/index.js');
+            if (typeof handler !== 'function') throw new Error('handler export missing from bundle');
+            console.log('bundle exports a callable handler');
+          "
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Testcontainers starts its own Postgres; the runner already has Docker,
+      # so no service container is declared here.
+      - name: Integration tests
+        run: npm run test:integration
+
+  infra:
+    name: Infrastructure typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - run: npm ci
+        working-directory: infra
+
+      # A Pulumi program is a TypeScript program. Typechecking it catches a
+      # renamed property before a deploy does.
+      - name: Typecheck the Pulumi program
+        run: npx tsc --noEmit
+        working-directory: infra

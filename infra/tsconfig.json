@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "moduleResolution": "node10",
+    // Pulumi's Node runtime loads this program as CommonJS, so node10 resolution
+    // is the correct pairing. TypeScript 6 warns that it is deprecated; the
+    // acknowledgement below silences that without changing the semantics.
+    "ignoreDeprecations": "6.0",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["*.ts"]
+}

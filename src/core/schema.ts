@@ -114,21 +114,60 @@ function coerceToNumber(value: unknown): unknown {
 }
 
 /**
+ * Strings that are unambiguously numbers or booleans become numbers or
+ * booleans.
+ *
+ * This exists because of a real bug, caught by tests/unit/sample-data.test.ts.
+ * Every value in a CSV cell is a string, while the same reading over JSON is a
+ * number. Fields the schema knows about (batteryPct, lat, lon) were being
+ * coerced individually, but unmodelled ones such as altitudeM were passing
+ * through as strings from CSV and as numbers from JSON. Since the dedupe key is
+ * hashed over telemetry content, the identical reading arriving as a file and
+ * as a message produced two different event ids and would have been stored
+ * twice, which is exactly what the dedupe key exists to prevent.
+ *
+ * The pattern is deliberately strict. It accepts "0.0", "16" and "-5.93", and
+ * refuses "007" and "1e5", because a leading zero or exponent notation usually
+ * marks an identifier or a formatted string rather than a reading, and turning
+ * a serial number into an integer is a worse error than leaving it as text.
+ */
+const UNAMBIGUOUS_NUMBER = /^-?(0|[1-9]\d*)(\.\d+)?$/;
+
+function normaliseScalar(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(normaliseScalar);
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, normaliseScalar(v)]),
+    );
+  }
+  if (typeof value !== 'string') return value;
+
+  const trimmed = value.trim();
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+  return UNAMBIGUOUS_NUMBER.test(trimmed) ? Number(trimmed) : value;
+}
+
+/**
  * `telemetryData` arrives as a real object over JSON but as an embedded JSON
- * string in a CSV cell. Both are accepted; anything else is left alone for the
- * schema to reject.
+ * string in a CSV cell. Both are accepted, then normalised so that the two
+ * transports agree on types; anything else is left alone for the schema to
+ * reject.
  */
 function coerceToObject(value: unknown): unknown {
   if (value === null || value === undefined) return {};
+
   if (typeof value === 'string') {
     const trimmed = value.trim();
     if (trimmed === '') return {};
     try {
-      return JSON.parse(trimmed);
+      return normaliseScalar(JSON.parse(trimmed));
     } catch {
       return value;
     }
   }
+
+  if (typeof value === 'object') return normaliseScalar(value);
   return value;
 }
 

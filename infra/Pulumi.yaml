@@ -1,0 +1,10 @@
+name: drone-telemetry-pipeline
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+description: Event-driven ingestion pipeline for autonomous drone telemetry
+
+config:
+  aws:region:
+    default: eu-west-1

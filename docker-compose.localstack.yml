@@ -1,0 +1,108 @@
+# Optional: the same stack on LocalStack instead of MinIO + ElasticMQ.
+#
+#   export LOCALSTACK_AUTH_TOKEN=<your token>
+#   docker compose -f docker-compose.localstack.yml up --build
+#
+# A complete file rather than an override, because swapping two services for one
+# is not something Compose's merge semantics express cleanly.
+#
+# Why this is not the default: LocalStack retired its free community image on
+# 23 March 2026, so every image now requires an account. The default stack uses
+# MinIO and ElasticMQ instead, which need no signup.
+#
+# What this buys you: LocalStack emulates S3 bucket notifications to SQS
+# natively, so the S3 ObjectCreated trigger is exercised for real rather than
+# being published by the uploader. That is the one piece of local fidelity the
+# default stack gives up.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: drone
+      POSTGRES_PASSWORD: drone
+      POSTGRES_DB: telemetry
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U drone -d telemetry']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  localstack:
+    image: localstack/localstack:stable
+    environment:
+      SERVICES: s3,sqs
+      AWS_DEFAULT_REGION: eu-west-1
+      PERSISTENCE: 0
+      # Required since the community image was retired.
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:?set LOCALSTACK_AUTH_TOKEN, or use the default docker-compose.yml}
+    ports:
+      - '4566:4566'
+    volumes:
+      # Creates the bucket, the queues, the redrive policy and the bucket
+      # notification once LocalStack is ready.
+      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -sf http://localhost:4566/_localstack/health | grep -q "\"sqs\": \"available\""']
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  migrate:
+    build: .
+    command: ['node', 'dist/adapters/postgres/migrate.js']
+    environment:
+      DATABASE_URL: postgres://drone:drone@postgres:5432/telemetry
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  processor:
+    build: .
+    command: ['node', 'dist/runtime/poller.js']
+    environment:
+      DATABASE_URL: postgres://drone:drone@postgres:5432/telemetry
+      AWS_REGION: eu-west-1
+      # One endpoint serves both services here, which is what AWS_ENDPOINT_URL
+      # is the fallback for.
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      RAW_BUCKET: drone-telemetry-raw
+      INGEST_QUEUE_NAME: drone-telemetry-ingest
+      LOG_LEVEL: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  api:
+    build: .
+    command: ['node', 'dist/runtime/api.js']
+    environment:
+      DATABASE_URL: postgres://drone:drone@postgres:5432/telemetry
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      API_PORT: 3000
+      LOG_LEVEL: info
+    ports:
+      - '3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

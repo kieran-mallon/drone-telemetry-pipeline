@@ -1,0 +1,12 @@
+# Example stack configuration.
+#
+# deployDatabase is false here so that `pulumi preview` runs without needing a
+# database password, and so the LocalStack walkthrough in the README stays fast
+# (LocalStack's community edition does not emulate RDS).
+#
+# To deploy the database as well:
+#   pulumi config set drone-telemetry-pipeline:deployDatabase true
+#   pulumi config set --secret drone-telemetry-pipeline:dbPassword '<a strong password>'
+config:
+  aws:region: eu-west-1
+  drone-telemetry-pipeline:deployDatabase: 'false'
