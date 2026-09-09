@@ -10,6 +10,21 @@ import { z } from 'zod';
  * first invocation instead of corrupting data quietly.
  */
 
+/**
+ * Parse a boolean from an environment variable.
+ *
+ * Not `z.coerce.boolean()`, which is a trap here: it applies JavaScript's
+ * `Boolean()`, and `Boolean("false")` is `true`. Every non-empty string would
+ * enable the flag, including the string that means the opposite.
+ */
+const booleanFromEnv = z.preprocess(
+  (value) =>
+    typeof value === 'string'
+      ? ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase())
+      : value,
+  z.boolean().default(false),
+);
+
 const configSchema = z.object({
   databaseUrl: z.string().min(1, { error: 'DATABASE_URL is required' }),
 
@@ -54,6 +69,19 @@ const configSchema = z.object({
     .enum(['silent', 'fatal', 'error', 'warn', 'info', 'debug', 'trace'])
     .default('info'),
 
+  /**
+   * Human-readable logs, off by default.
+   *
+   * Deliberately its own flag rather than being inferred from "am I running
+   * locally". Pretty printing is a property of *who is reading*, not of *where
+   * the code runs*: a container on a laptop is local and still wants structured
+   * JSON, because nobody is watching its stdout and something else will parse
+   * it. Inferring this from the endpoint overrides is what crashed the Compose
+   * stack, since the pretty transport is a dev dependency the runtime image
+   * does not install.
+   */
+  logPretty: booleanFromEnv,
+
   apiPort: z.coerce.number().int().min(1).max(65535).default(3000),
   apiHost: z.string().default('0.0.0.0'),
 });
@@ -74,6 +102,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxRecordsPerObject: env['MAX_RECORDS_PER_OBJECT'],
     insertChunkSize: env['INSERT_CHUNK_SIZE'],
     logLevel: env['LOG_LEVEL'],
+    logPretty: env['LOG_PRETTY'],
     apiPort: env['API_PORT'],
     apiHost: env['API_HOST'],
   });
@@ -96,12 +125,4 @@ export function s3Endpoint(config: Config): string | undefined {
 /** The SQS endpoint override, if any. */
 export function sqsEndpoint(config: Config): string | undefined {
   return config.sqsEndpointUrl ?? config.awsEndpointUrl;
-}
-
-/**
- * True when any endpoint override is set, which only happens locally. Used to
- * decide things like whether to pretty-print logs.
- */
-export function isLocal(config: Config): boolean {
-  return s3Endpoint(config) !== undefined || sqsEndpoint(config) !== undefined;
 }

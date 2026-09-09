@@ -9,7 +9,7 @@ runs on a schedule. Every record either becomes a row in `telemetry_events` or a
 row in `telemetry_quarantine` with the reason attached. There is no third
 outcome, and no way for one corrupt record to affect its neighbours.
 
-**Status:** 110 unit tests and 23 integration tests, all passing. The Pulumi program is
+**Status:** 129 unit tests and 23 integration tests, all passing. The Pulumi program is
 typechecked but not deployed. See
 [Honesty about what is and is not proven](#honesty-about-what-is-and-is-not-proven)
 for exactly what has been run and what has not.
@@ -116,7 +116,7 @@ Postgres exists is `src/runtime/dependencies.ts`.
 Three things fall out of that, and they are the reason it was worth the extra
 indirection:
 
-1. **The tests need no mocking library.** 110 unit tests, no Docker, no network,
+1. **The tests need no mocking library.** 129 unit tests, no Docker, no network,
    under a second. The in-memory `EventStore` is 40 lines.
 2. **The transport became a detail.** Supporting both a Lambda and a local
    poller cost about 60 lines each, because neither contains any logic.
@@ -406,7 +406,7 @@ every time-window query for as long as it went unnoticed.
 ## Testing
 
 ```
-tests/unit/          110 tests, ~200ms, no Docker
+tests/unit/          129 tests, ~200ms, no Docker
 tests/integration/    23 tests, real Postgres via Testcontainers (needs Docker)
 ```
 
@@ -488,7 +488,7 @@ Worth being explicit, because "it works" should mean something specific.
 
 **Run, and green:**
 
-- The 110 unit tests. All core logic, and the handler including every failure
+- The 129 unit tests. All core logic, and the handler including every failure
   path, against in-memory doubles.
 - The 23 integration tests, against a real Postgres started by Testcontainers.
   These earned their keep: they caught a bug where NUMERIC columns came back as
@@ -580,6 +580,15 @@ local queue server whose URL format is its own business.
 Configuration is parsed and validated with Zod at boot, so a missing or
 malformed variable fails immediately with a readable message rather than
 surfacing as `undefined` in a connection string three minutes into a batch.
+
+`LOG_PRETTY` is worth one line of explanation, because getting it wrong broke
+the Compose stack. Pretty printing is a property of **who is reading**, not of
+**where the code runs**. It was originally inferred from "are the endpoint
+overrides set", meaning any local run got the pretty transport, including
+containers, which do not install it and do not want it: nobody watches a
+container's stdout, something else parses it. It is now its own flag, off by
+default, and asking for it where it is unavailable degrades to JSON rather than
+crashing. A logging preference should never be worth a crash loop.
 
 ---
 
