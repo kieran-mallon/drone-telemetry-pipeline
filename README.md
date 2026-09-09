@@ -521,10 +521,21 @@ Worth being explicit, because "it works" should mean something specific.
 - The pipeline against every sample file, with the results asserted in
   `tests/unit/sample-data.test.ts`.
 
-**Partly verified:** the Compose stack built cleanly and Postgres migrations
-applied, but the object storage and queue services were replaced after that run
-(see [The local stack](#the-local-stack-and-why-it-is-not-localstack)) and the
-end-to-end walkthrough has not been repeated since.
+**Verified by hand, end to end:** `docker compose up`, files uploaded to object
+storage, rows appearing in Postgres, quarantine rows for the corrupt ones, and
+the read API serving both query patterns. The idempotency claim is observed
+rather than asserted; these are the processor's own logs from three uploads of
+the same file:
+
+```
+received:13  inserted:6  duplicates:0  duplicatesInBatch:1  quarantined:6
+received:13  inserted:0  duplicates:6  duplicatesInBatch:1  quarantined:6
+received:13  inserted:0  duplicates:6  duplicatesInBatch:1  quarantined:6
+```
+
+The CSV and NDJSON sample files hold the same 40 records in different formats,
+and the second to arrive inserted 0 and reported 40 duplicates, which is the
+cross-format deduplication working on real data rather than in a test.
 
 **Not verified, and would not be without an account:** the Pulumi program is
 typechecked but **has not been deployed to real AWS**. Some things only fail on

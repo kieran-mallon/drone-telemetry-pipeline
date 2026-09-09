@@ -59,6 +59,17 @@ async function pollOnce(queueUrl: string): Promise<void> {
   const messages = received.Messages ?? [];
   if (messages.length === 0) return;
 
+  /**
+   * How many messages a poll actually returned.
+   *
+   * Debug rather than info, so it costs nothing in normal running. It exists
+   * because a message once took a full minute to arrive and the logs could not
+   * say whether it had been delivered late, delivered and dropped, or delivered
+   * and left undeleted. Per-message logs alone cannot answer that; only the
+   * receive can.
+   */
+  logger.debug({ count: messages.length }, 'messages received');
+
   const ingestMessages: IngestMessage[] = messages.map((message) => ({
     messageId: message.MessageId ?? 'unknown',
     body: message.Body ?? '',
@@ -75,15 +86,42 @@ async function pollOnce(queueUrl: string): Promise<void> {
    */
   const toDelete = messages.filter((message) => !failed.has(message.MessageId ?? 'unknown'));
 
-  if (toDelete.length > 0) {
-    await sqs.send(
-      new DeleteMessageBatchCommand({
-        QueueUrl: queueUrl,
-        Entries: toDelete.map((message, index) => ({
-          Id: String(index),
-          ReceiptHandle: message.ReceiptHandle ?? '',
+  if (toDelete.length === 0) return;
+
+  const deletion = await sqs.send(
+    new DeleteMessageBatchCommand({
+      QueueUrl: queueUrl,
+      Entries: toDelete.map((message, index) => ({
+        Id: String(index),
+        ReceiptHandle: message.ReceiptHandle ?? '',
+      })),
+    }),
+  );
+
+  /**
+   * DeleteMessageBatch reports per-entry outcomes and does NOT throw when some
+   * entries fail. Ignoring the Failed array, which this originally did, means a
+   * message that was processed but not deleted comes back when its visibility
+   * timeout expires and is silently processed again.
+   *
+   * Idempotency stops that corrupting anything, which is precisely why it would
+   * go unnoticed: the only symptom is duplicated work and a receive count
+   * climbing towards the dead-letter queue for a message that never actually
+   * failed. Worth an error log rather than a shrug.
+   */
+  const failedDeletes = deletion.Failed ?? [];
+
+  if (failedDeletes.length > 0) {
+    logger.error(
+      {
+        count: failedDeletes.length,
+        reasons: failedDeletes.map((entry) => ({
+          code: entry.Code,
+          senderFault: entry.SenderFault,
+          message: entry.Message,
         })),
-      }),
+      },
+      'some messages were processed but could not be deleted; they will be redelivered',
     );
   }
 }
