@@ -1,0 +1,20 @@
+node_modules/
+dist/
+coverage/
+*.log
+
+# Environment
+.env
+.env.local
+!.env.example
+
+# Pulumi
+infra/Pulumi.*.yaml
+!infra/Pulumi.dev.yaml
+infra/.pulumi/
+infra/bin/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
