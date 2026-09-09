@@ -30,7 +30,10 @@ const configSchema = z.object({
   /** Rows per INSERT statement. Postgres caps a statement at 65535 bind parameters. */
   insertChunkSize: z.coerce.number().int().min(1).max(5000).default(500),
 
-  logLevel: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+  // 'silent' is a real Pino level and is what tests and smoke runs want.
+  logLevel: z
+    .enum(['silent', 'fatal', 'error', 'warn', 'info', 'debug', 'trace'])
+    .default('info'),
 
   apiPort: z.coerce.number().int().min(1).max(65535).default(3000),
   apiHost: z.string().default('0.0.0.0'),
