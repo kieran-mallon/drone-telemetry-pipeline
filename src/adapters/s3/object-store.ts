@@ -1,17 +1,19 @@
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 
-import type { Config } from '../../config.js';
+import { s3Endpoint, type Config } from '../../config.js';
 import type { ObjectStore } from '../../ports/object-store.js';
 
 export function createS3Client(config: Config): S3Client {
+  const endpoint = s3Endpoint(config);
+
   return new S3Client({
     region: config.awsRegion,
-    // Present for LocalStack, absent in a real deployment. Path-style addressing
-    // is required because LocalStack does not serve virtual-host-style buckets
-    // on localhost.
-    ...(config.awsEndpointUrl !== undefined
-      ? { endpoint: config.awsEndpointUrl, forcePathStyle: true }
-      : {}),
+    /**
+     * Present locally, absent in a real deployment. Path-style addressing is
+     * required because local S3 servers serve buckets as a path on one host
+     * rather than as bucket.host virtual subdomains.
+     */
+    ...(endpoint !== undefined ? { endpoint, forcePathStyle: true } : {}),
   });
 }
 

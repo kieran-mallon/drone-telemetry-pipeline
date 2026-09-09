@@ -1,6 +1,6 @@
 import { pino } from 'pino';
 
-import type { Config } from '../../config.js';
+import { isLocal, type Config } from '../../config.js';
 import type { Logger } from '../../ports/logger.js';
 
 /**
@@ -18,7 +18,7 @@ import type { Logger } from '../../ports/logger.js';
  * quarantine table and the `source` column instead.
  */
 export function createLogger(config: Config): Logger {
-  const isLocal = config.awsEndpointUrl !== undefined;
+  const local = isLocal(config);
 
   return pino({
     level: config.logLevel,
@@ -29,7 +29,7 @@ export function createLogger(config: Config): Logger {
     formatters: {
       level: (label) => ({ level: label }),
     },
-    ...(isLocal
+    ...(local
       ? {
           transport: {
             target: 'pino-pretty',

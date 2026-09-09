@@ -11,7 +11,9 @@
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 
 import { createS3Client } from '../src/adapters/s3/object-store.js';
+import { createSqsClient } from '../src/adapters/sqs/queue.js';
 import { loadConfig } from '../src/config.js';
+import { notifyObjectCreated } from './s3-notification.js';
 
 const config = loadConfig();
 
@@ -102,14 +104,25 @@ for (let i = 0; i < count; i += 1) {
 
 const key = `seed/${Date.now()}-fleet-${count}.ndjson`;
 
+const body = lines.join('\n');
+
 try {
   await createS3Client(config).send(
     new PutObjectCommand({
       Bucket: config.rawBucket,
       Key: key,
-      Body: lines.join('\n'),
+      Body: body,
       ContentType: 'application/x-ndjson',
     }),
+  );
+
+  // In AWS the bucket notification does this. See scripts/s3-notification.ts.
+  await notifyObjectCreated(
+    createSqsClient(config),
+    config,
+    config.rawBucket,
+    key,
+    Buffer.byteLength(body),
   );
 
   console.log(`uploaded s3://${config.rawBucket}/${key}`);

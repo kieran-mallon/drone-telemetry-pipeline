@@ -1,9 +1,14 @@
-# The whole pipeline, locally, with one command.
+# The whole pipeline, locally, with one command:
 #
 #   docker compose up --build
 #
-# Brings up Postgres, LocalStack (S3 + SQS), runs migrations, then starts the
-# processor and the read API. See README.md for the walkthrough.
+# Postgres, MinIO (S3), ElasticMQ (SQS), migrations, the processor and the read
+# API. Every image here is open source and needs no account or licence key.
+#
+# LocalStack used to fill the MinIO and ElasticMQ roles in a single container.
+# It retired its free image in March 2026 and now requires an auth token, which
+# would mean nobody could run this without signing up. See
+# docker-compose.localstack.yml if you do have a token.
 
 services:
   postgres:
@@ -17,31 +22,52 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      # Dependent services wait for this, so they never race a database that is
-      # listening but not yet accepting connections.
+      # Dependents wait on this, so nothing races a database that is listening
+      # but not yet accepting connections.
       test: ['CMD-SHELL', 'pg_isready -U drone -d telemetry']
       interval: 2s
       timeout: 3s
       retries: 30
 
-  localstack:
-    image: localstack/localstack:stable
+  # S3. The AWS SDK talks to it unmodified, so the real S3 adapter is exercised.
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
     environment:
-      SERVICES: s3,sqs
-      AWS_DEFAULT_REGION: eu-west-1
-      # Persisting nothing keeps every run reproducible from a clean slate.
-      PERSISTENCE: 0
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - '4566:4566'
+      - '9000:9000'   # S3 API
+      - '9001:9001'   # web console, handy for seeing uploaded objects
     volumes:
-      # Anything in ready.d runs once LocalStack is accepting requests. This is
-      # what creates the bucket, the queues and the bucket notification.
-      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init.sh:ro
-    healthcheck:
-      test: ['CMD-SHELL', 'curl -sf http://localhost:4566/_localstack/health | grep -q "\"sqs\": \"available\""']
-      interval: 3s
-      timeout: 5s
-      retries: 40
+      - minio-data:/data
+
+  # Creates the bucket, then exits. A retry loop rather than a healthcheck on
+  # MinIO itself: the server image does not reliably ship a tool to probe with,
+  # and polling until the API answers is the more robust check anyway.
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 minioadmin minioadmin >/dev/null 2>&1; do
+          echo 'waiting for minio...'
+          sleep 1
+        done
+        mc mb --ignore-existing local/drone-telemetry-raw
+        echo 'bucket drone-telemetry-raw ready'
+    restart: 'no'
+
+  # SQS. Queues and the redrive policy are declared in docker/elasticmq.conf.
+  elasticmq:
+    image: softwaremill/elasticmq-native:1.7.1
+    ports:
+      - '9324:9324'
+    volumes:
+      - ./docker/elasticmq.conf:/opt/elasticmq.conf:ro
 
   migrate:
     build: .
@@ -59,20 +85,26 @@ services:
     environment:
       DATABASE_URL: postgres://drone:drone@postgres:5432/telemetry
       AWS_REGION: eu-west-1
-      # The single variable that separates the local runtime from the cloud one.
-      AWS_ENDPOINT_URL: http://localstack:4566
-      AWS_ACCESS_KEY_ID: test
-      AWS_SECRET_ACCESS_KEY: test
+      # Two servers, so two endpoints. Both unset in a real deployment, which is
+      # the entire difference between this runtime and the Lambda.
+      S3_ENDPOINT_URL: http://minio:9000
+      SQS_ENDPOINT_URL: http://elasticmq:9324
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
       RAW_BUCKET: drone-telemetry-raw
-      INGEST_QUEUE_URL: http://localstack:4566/000000000000/drone-telemetry-ingest
+      # Resolved to a URL at runtime via GetQueueUrl, so no URL format is
+      # hardcoded anywhere.
+      INGEST_QUEUE_NAME: drone-telemetry-ingest
       LOG_LEVEL: info
     depends_on:
       postgres:
         condition: service_healthy
-      localstack:
-        condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      elasticmq:
+        condition: service_started
     restart: unless-stopped
 
   api:
@@ -80,7 +112,10 @@ services:
     command: ['node', 'dist/runtime/api.js']
     environment:
       DATABASE_URL: postgres://drone:drone@postgres:5432/telemetry
-      AWS_ENDPOINT_URL: http://localstack:4566
+      S3_ENDPOINT_URL: http://minio:9000
+      SQS_ENDPOINT_URL: http://elasticmq:9324
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
       API_PORT: 3000
       LOG_LEVEL: info
     ports:
@@ -94,3 +129,4 @@ services:
 
 volumes:
   postgres-data:
+  minio-data:

@@ -15,13 +15,32 @@ const configSchema = z.object({
 
   awsRegion: z.string().default('eu-west-1'),
   /**
-   * Set to LocalStack's address for local development, left unset in a real
-   * deployment so the SDK resolves the real AWS endpoint. This single variable
-   * is the entire difference between the local and cloud runtimes.
+   * Endpoint overrides for local development, all unset in a real deployment so
+   * the SDK resolves real AWS. These are the entire difference between the
+   * local and cloud runtimes.
+   *
+   * AWS_ENDPOINT_URL is the fallback for both, which is what a single-endpoint
+   * emulator wants. The local stack instead runs two separate servers, MinIO
+   * for S3 and ElasticMQ for SQS, so each gets its own override.
    */
   awsEndpointUrl: z.string().optional(),
+  s3EndpointUrl: z.string().optional(),
+  sqsEndpointUrl: z.string().optional(),
 
   rawBucket: z.string().default('drone-telemetry-raw'),
+
+  /**
+   * The queue is identified by name and its URL resolved at runtime via
+   * GetQueueUrl, with INGEST_QUEUE_URL as an override when the URL is already
+   * known.
+   *
+   * Resolving by name rather than hardcoding a URL is what lets the identical
+   * configuration work against real SQS, which returns
+   * https://sqs.<region>.amazonaws.com/<account>/<name>, and against a local
+   * SQS-compatible server, whose URL shape is its own business. Hardcoding the
+   * URL couples the application to one provider's formatting.
+   */
+  ingestQueueName: z.string().default('drone-telemetry-ingest'),
   ingestQueueUrl: z.string().default(''),
 
   batchSize: z.coerce.number().int().min(1).max(10).default(10),
@@ -46,7 +65,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     databaseUrl: env['DATABASE_URL'],
     awsRegion: env['AWS_REGION'],
     awsEndpointUrl: env['AWS_ENDPOINT_URL'],
+    s3EndpointUrl: env['S3_ENDPOINT_URL'],
+    sqsEndpointUrl: env['SQS_ENDPOINT_URL'],
     rawBucket: env['RAW_BUCKET'],
+    ingestQueueName: env['INGEST_QUEUE_NAME'],
     ingestQueueUrl: env['INGEST_QUEUE_URL'],
     batchSize: env['BATCH_SIZE'],
     maxRecordsPerObject: env['MAX_RECORDS_PER_OBJECT'],
@@ -64,4 +86,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
 
   return result.data;
+}
+
+/** The S3 endpoint override, if any. */
+export function s3Endpoint(config: Config): string | undefined {
+  return config.s3EndpointUrl ?? config.awsEndpointUrl;
+}
+
+/** The SQS endpoint override, if any. */
+export function sqsEndpoint(config: Config): string | undefined {
+  return config.sqsEndpointUrl ?? config.awsEndpointUrl;
+}
+
+/**
+ * True when any endpoint override is set, which only happens locally. Used to
+ * decide things like whether to pretty-print logs.
+ */
+export function isLocal(config: Config): boolean {
+  return s3Endpoint(config) !== undefined || sqsEndpoint(config) !== undefined;
 }

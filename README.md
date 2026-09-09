@@ -9,7 +9,7 @@ runs on a schedule. Every record either becomes a row in `telemetry_events` or a
 row in `telemetry_quarantine` with the reason attached. There is no third
 outcome, and no way for one corrupt record to affect its neighbours.
 
-**Status:** 102 unit tests and 22 integration tests. The Pulumi program is
+**Status:** 110 unit tests and 23 integration tests, all passing. The Pulumi program is
 typechecked but not deployed. See
 [Honesty about what is and is not proven](#honesty-about-what-is-and-is-not-proven)
 for exactly what has been run and what has not.
@@ -40,8 +40,8 @@ flowchart LR
 
 The same `processTelemetry` function runs in both deployments. In AWS it is a
 Lambda behind an SQS event source mapping; locally it is a long-lived Node
-process polling the same queue on LocalStack. Neither runtime file contains a
-line of pipeline logic.
+process polling the same queue. Neither runtime file contains a line of
+pipeline logic.
 
 ---
 
@@ -51,7 +51,7 @@ Requires Docker and Node 22+.
 
 ```bash
 npm install
-docker compose up --build        # Postgres, LocalStack, migrations, processor, API
+docker compose up --build        # Postgres, MinIO, ElasticMQ, migrations, processor, API
 npm run send:file                # upload the sample batches to S3
 ```
 
@@ -116,7 +116,7 @@ Postgres exists is `src/runtime/dependencies.ts`.
 Three things fall out of that, and they are the reason it was worth the extra
 indirection:
 
-1. **The tests need no mocking library.** 102 unit tests, no Docker, no network,
+1. **The tests need no mocking library.** 110 unit tests, no Docker, no network,
    under a second. The in-memory `EventStore` is 40 lines.
 2. **The transport became a detail.** Supporting both a Lambda and a local
    poller cost about 60 lines each, because neither contains any logic.
@@ -319,6 +319,39 @@ resource policy on the queue, scoped with `aws:SourceArn` so that no other
 bucket in the account can use it. Full breakdown in
 [`infra/README.md`](infra/README.md).
 
+### The local stack, and why it is not LocalStack
+
+The obvious choice for local AWS is LocalStack, and this was built on it.
+**LocalStack retired its free community image on 23 March 2026**, and every
+image now requires an auth token. That turns `docker compose up` into "first,
+go and create an account", which is not a reasonable thing to ask of someone
+reviewing a repository.
+
+So the local stack is **MinIO** for S3 and **ElasticMQ** for SQS. Both are open
+source, need no account, and have been around long enough to be dull, which is
+the quality that matters most in a dependency whose entire job is to start
+reliably on someone else's machine. Both speak the real AWS APIs, so the S3 and
+SQS adapters are exercised locally rather than stubbed.
+
+**One thing is genuinely lost, and it is worth being clear about it.** MinIO can
+emit bucket notifications to a webhook, Kafka or Redis, but not to an SQS queue.
+So locally, `npm run send:file` publishes the `ObjectCreated` event that S3
+publishes for itself in AWS. The message is the real S3 event shape, with keys
+URL-encoded exactly as S3 encodes them (spaces as `+`), so the handler cannot
+tell the difference and its decoding path is genuinely exercised. What is not
+proven locally is the bucket-notification wiring itself, which lives in
+`infra/index.ts` and would only be proven by a deploy.
+
+`docker-compose.localstack.yml` runs the original topology for anyone who does
+have a LocalStack token, and that version does exercise the S3 trigger natively.
+
+This also forced a small improvement. Because a local queue server advertises
+URLs on a hostname only resolvable inside the Docker network, the queue is now
+identified by **name** and its URL resolved at runtime via `GetQueueUrl`, with
+the endpoint's host applied to the result. Hardcoding a queue URL couples the
+application to one provider's formatting; resolving by name means the same
+configuration works everywhere.
+
 ---
 
 ## The data contract
@@ -373,8 +406,8 @@ every time-window query for as long as it went unnoticed.
 ## Testing
 
 ```
-tests/unit/          102 tests, ~700ms, no Docker
-tests/integration/    22 tests, real Postgres via Testcontainers (needs Docker)
+tests/unit/          110 tests, ~200ms, no Docker
+tests/integration/    23 tests, real Postgres via Testcontainers (needs Docker)
 ```
 
 The split is deliberate. The unit suite is fast enough to run on every save
@@ -408,9 +441,10 @@ tests then assert the properties a mock cannot reach:
 
 ### What I would add next
 
-- **End-to-end through LocalStack.** Put a file in S3, wait for the row to
-  appear in Postgres. It would catch wiring mistakes that no unit test can: a
-  wrong queue ARN, a missing IAM permission, an S3 key that arrives URL-encoded.
+- **A real end-to-end test.** Put a file in S3, wait for the row to appear in
+  Postgres, assert it. The local stack does this by hand today but nothing
+  automates it, and it would catch wiring mistakes no unit test can: a wrong
+  queue name, a missing IAM permission, an S3 key that arrives URL-encoded.
   This is the biggest gap in the suite.
 - **Contract tests against a published schema.** Currently the drone firmware
   and this pipeline agree on a shape by convention. A shared JSON Schema, with
@@ -454,8 +488,14 @@ Worth being explicit, because "it works" should mean something specific.
 
 **Run, and green:**
 
-- The 102 unit tests. All core logic, and the handler including every failure
+- The 110 unit tests. All core logic, and the handler including every failure
   path, against in-memory doubles.
+- The 23 integration tests, against a real Postgres started by Testcontainers.
+  These earned their keep: they caught a bug where NUMERIC columns came back as
+  strings, because the type parser correcting that was registered as a side
+  effect of importing a module the test helper never imported. The read API
+  would have served `{"battery_pct": "87.50"}` in production and no unit test
+  could have seen it.
 - Typecheck and lint across the application, the scripts and the Pulumi program.
 - The Lambda bundle: built with esbuild, then loaded and invoked with a
   synthetic `SQSEvent` against an unreachable database, confirming it exports a
@@ -464,14 +504,10 @@ Worth being explicit, because "it works" should mean something specific.
 - The pipeline against every sample file, with the results asserted in
   `tests/unit/sample-data.test.ts`.
 
-**Written, and expected to pass, but not yet run on this machine:**
-
-- The 22 integration tests. They need a Docker daemon for Testcontainers.
-- The full `docker compose up` stack.
-
-I would rather say this plainly than claim a green run I have not seen. If a
-reviewer runs either and it fails, the failure is in the wiring, not in the
-logic, and the unit suite localises it quickly.
+**Partly verified:** the Compose stack built cleanly and Postgres migrations
+applied, but the object storage and queue services were replaced after that run
+(see [The local stack](#the-local-stack-and-why-it-is-not-localstack)) and the
+end-to-end walkthrough has not been repeated since.
 
 **Not verified, and would not be without an account:** the Pulumi program is
 typechecked but **has not been deployed to real AWS**. Some things only fail on
@@ -479,12 +515,12 @@ a real deploy: an IAM policy that is one action too tight, an RDS parameter the
 API rejects, a VPC route that does not exist. I would expect a first deploy to
 need one or two fixes.
 
-**Known gap:** the local topology is defined twice, once in
-`scripts/localstack-init.sh` and once in `infra/index.ts`. That is real
-duplication and it can drift. It is there so that `docker compose up` works
-without installing Pulumi first; `infra/README.md` documents running the Pulumi
-program against LocalStack via `pulumilocal`, which is the single-source-of-truth
-version.
+**Known gap:** the local topology is defined separately from the AWS one, in
+`docker-compose.yml` and `docker/elasticmq.conf` rather than in
+`infra/index.ts`. That is real duplication and it can drift. It is there so
+`docker compose up` works with no Pulumi install and no cloud account. The
+values that matter are kept deliberately identical and commented as such:
+`maxReceiveCount` of 3 and a 60 second visibility timeout appear in both.
 
 ## Where I would go next
 
@@ -526,15 +562,20 @@ migrations/      Numbered SQL, each index commented with the query it serves.
 infra/           Pulumi program. See infra/README.md.
 tests/           unit (no Docker) and integration (Testcontainers).
 sample-data/     Clean and deliberately corrupt batches. See sample-data/README.md.
-scripts/         LocalStack init, seed generator, Lambda bundler.
+scripts/         Seed generator, sample uploader, Lambda bundler, LocalStack init.
 ```
 
 ## Configuration
 
-Copy `.env.example` to `.env` to run the processor or API on the host; Compose
-sets these for the containers. The variable worth knowing is
-**`AWS_ENDPOINT_URL`**: set to LocalStack's address locally, unset in a real
-deployment. It is the entire difference between the two runtimes.
+Copy `.env.example` to `.env` to run the scripts, processor or API on the host;
+Compose sets these for the containers. The variables worth knowing are
+**`S3_ENDPOINT_URL`** and **`SQS_ENDPOINT_URL`**: set to the local servers
+locally, unset in a real deployment so the SDK resolves real AWS. They are the
+entire difference between the two runtimes.
+
+The queue is identified by **name**, not URL. The URL is resolved at runtime via
+`GetQueueUrl`, so the same configuration works against real SQS and against a
+local queue server whose URL format is its own business.
 
 Configuration is parsed and validated with Zod at boot, so a missing or
 malformed variable fails immediately with a readable message rather than
@@ -566,7 +607,7 @@ with trade-offs rather than a default, and I picked. Postgres over DynamoDB
 knowing the connection-model argument cuts the other way. Raw SQL over an ORM,
 because the thing being assessed here is whether I understand the database, and
 an ORM hides exactly that. A local poller rather than emulating Lambda in
-LocalStack, because the handler is byte-identical either way, so emulation adds
+an emulator, because the handler is byte-identical either way, so emulation adds
 a flaky moving part and proves nothing extra.
 
 I am a frontend engineer by background, and several of these were genuinely new

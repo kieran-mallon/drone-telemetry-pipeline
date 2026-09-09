@@ -13,10 +13,12 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { PutObjectCommand } from '@aws-sdk/client-s3';
-import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
+import { SendMessageCommand } from '@aws-sdk/client-sqs';
 
 import { createS3Client } from '../src/adapters/s3/object-store.js';
+import { createSqsClient, resolveQueueUrl } from '../src/adapters/sqs/queue.js';
 import { loadConfig } from '../src/config.js';
+import { notifyObjectCreated } from './s3-notification.js';
 
 const config = loadConfig();
 const sampleDir = fileURLToPath(new URL('../sample-data/', import.meta.url));
@@ -29,6 +31,7 @@ const SAMPLE_FILES = [
 
 async function uploadFiles(filter: string | undefined): Promise<void> {
   const s3 = createS3Client(config);
+  const sqs = createSqsClient(config);
   const files = filter === undefined ? SAMPLE_FILES : SAMPLE_FILES.filter((f) => f.includes(filter));
 
   if (files.length === 0) {
@@ -38,30 +41,31 @@ async function uploadFiles(filter: string | undefined): Promise<void> {
   }
 
   for (const file of files) {
-    // A unique key per run, so re-running produces a fresh S3 event rather than
-    // a no-op overwrite. The pipeline still deduplicates the records inside.
+    // A unique key per run, so re-running produces a fresh event rather than a
+    // no-op overwrite. The pipeline still deduplicates the records inside.
     const key = `${new Date().toISOString().slice(0, 10)}/${Date.now()}-${file}`;
+    const body = readFileSync(`${sampleDir}${file}`);
 
     await s3.send(
       new PutObjectCommand({
         Bucket: config.rawBucket,
         Key: key,
-        Body: readFileSync(`${sampleDir}${file}`),
+        Body: body,
         ContentType: file.endsWith('.csv') ? 'text/csv' : 'application/x-ndjson',
       }),
     );
 
+    // In AWS the bucket notification does this. See scripts/s3-notification.ts.
+    await notifyObjectCreated(sqs, config, config.rawBucket, key, body.byteLength);
+
     console.log(`uploaded s3://${config.rawBucket}/${key}`);
   }
 
-  console.log('\nS3 has emitted ObjectCreated for each upload. Watch the processor logs.');
+  console.log('\nObjectCreated published for each upload. Watch the processor logs.');
 }
 
 async function sendMessage(): Promise<void> {
-  const sqs = new SQSClient({
-    region: config.awsRegion,
-    ...(config.awsEndpointUrl !== undefined ? { endpoint: config.awsEndpointUrl } : {}),
-  });
+  const sqs = createSqsClient(config);
 
   const record = {
     droneId: 'DRONE-042',
@@ -73,7 +77,7 @@ async function sendMessage(): Promise<void> {
 
   await sqs.send(
     new SendMessageCommand({
-      QueueUrl: config.ingestQueueUrl,
+      QueueUrl: await resolveQueueUrl(sqs, config),
       MessageBody: JSON.stringify(record),
     }),
   );

@@ -55,8 +55,9 @@ deployed to a real AWS account; see the honesty note in the root README.
 
 ### Against LocalStack
 
-`pulumilocal` wraps Pulumi with LocalStack's endpoints, which lets the same
-program provision the local stack instead of `scripts/localstack-init.sh`:
+If you have a LocalStack auth token (its free community image was retired in
+March 2026), `pulumilocal` wraps Pulumi with LocalStack's endpoints so the same
+program provisions the local stack:
 
 ```bash
 pip install pulumi-local
@@ -65,6 +66,11 @@ pulumilocal stack init localstack
 pulumilocal up
 ```
 
-That is the version with a single source of truth for the topology. The shell
-script is kept as the zero-install path so a reviewer can run
-`docker compose up` without installing Pulumi first.
+Pair that with `docker compose -f docker-compose.localstack.yml up`. It is the
+version with a single source of truth for the topology, and the only local setup
+that exercises S3 bucket notifications natively.
+
+The default stack uses MinIO and ElasticMQ instead, which need no account. It
+defines its queues in `docker/elasticmq.conf` rather than here, so the two
+definitions can drift; the values that matter (`maxReceiveCount` of 3, a 60
+second visibility timeout) are kept identical and commented as such in both.

@@ -1,9 +1,6 @@
-import {
-  DeleteMessageBatchCommand,
-  ReceiveMessageCommand,
-  SQSClient,
-} from '@aws-sdk/client-sqs';
+import { DeleteMessageBatchCommand, ReceiveMessageCommand } from '@aws-sdk/client-sqs';
 
+import { createSqsClient, resolveQueueUrl } from '../adapters/sqs/queue.js';
 import { processTelemetry, type IngestMessage } from '../handlers/process-telemetry.js';
 import { createRuntime } from './dependencies.js';
 
@@ -24,14 +21,24 @@ import { createRuntime } from './dependencies.js';
 const runtime = createRuntime();
 const logger = runtime.dependencies.logger.child({ runtime: 'poller' });
 
-const sqs = new SQSClient({
-  region: runtime.config.awsRegion,
-  ...(runtime.config.awsEndpointUrl !== undefined
-    ? { endpoint: runtime.config.awsEndpointUrl }
-    : {}),
-});
+const sqs = createSqsClient(runtime.config);
 
 let running = true;
+
+/**
+ * Resolved once, then reused.
+ *
+ * Deliberately lazy rather than resolved at startup: under Compose the queue
+ * may not be accepting connections the instant this container starts, and a
+ * process that dies on boot because a sibling was two seconds slow is a bad
+ * container. Failing here just falls into the loop's backoff and retries.
+ */
+let cachedQueueUrl: string | undefined;
+
+async function getQueueUrl(): Promise<string> {
+  cachedQueueUrl ??= await resolveQueueUrl(sqs, runtime.config);
+  return cachedQueueUrl;
+}
 
 async function pollOnce(queueUrl: string): Promise<void> {
   const received = await sqs.send(
@@ -80,19 +87,14 @@ async function pollOnce(queueUrl: string): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const queueUrl = runtime.config.ingestQueueUrl;
-
-  if (queueUrl === '') {
-    logger.error({}, 'INGEST_QUEUE_URL is not set');
-    process.exitCode = 1;
-    return;
-  }
-
-  logger.info({ queueUrl, batchSize: runtime.config.batchSize }, 'processor started');
+  logger.info(
+    { queue: runtime.config.ingestQueueName, batchSize: runtime.config.batchSize },
+    'processor started',
+  );
 
   while (running) {
     try {
-      await pollOnce(queueUrl);
+      await pollOnce(await getQueueUrl());
     } catch (error) {
       /**
        * The loop must survive its own errors. A transient SQS failure or a
