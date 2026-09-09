@@ -8,7 +8,12 @@ export default tseslint.config(
   {
     rules: {
       '@typescript-eslint/consistent-type-imports': 'error',
-      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      // ignoreRestSiblings allows the idiomatic `const { omitted, ...rest } = obj`
+      // pattern for dropping a key, which is otherwise flagged as an unused variable.
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', ignoreRestSiblings: true },
+      ],
       'no-console': ['error', { allow: ['error'] }],
       eqeqeq: ['error', 'always'],
     },

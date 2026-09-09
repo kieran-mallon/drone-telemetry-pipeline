@@ -1,0 +1,96 @@
+# The whole pipeline, locally, with one command.
+#
+#   docker compose up --build
+#
+# Brings up Postgres, LocalStack (S3 + SQS), runs migrations, then starts the
+# processor and the read API. See README.md for the walkthrough.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: drone
+      POSTGRES_PASSWORD: drone
+      POSTGRES_DB: telemetry
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # Dependent services wait for this, so they never race a database that is
+      # listening but not yet accepting connections.
+      test: ['CMD-SHELL', 'pg_isready -U drone -d telemetry']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  localstack:
+    image: localstack/localstack:stable
+    environment:
+      SERVICES: s3,sqs
+      AWS_DEFAULT_REGION: eu-west-1
+      # Persisting nothing keeps every run reproducible from a clean slate.
+      PERSISTENCE: 0
+    ports:
+      - '4566:4566'
+    volumes:
+      # Anything in ready.d runs once LocalStack is accepting requests. This is
+      # what creates the bucket, the queues and the bucket notification.
+      - ./scripts/localstack-init.sh:/etc/localstack/init/ready.d/init.sh:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -sf http://localhost:4566/_localstack/health | grep -q "\"sqs\": \"available\""']
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  migrate:
+    build: .
+    command: ['node', 'dist/adapters/postgres/migrate.js']
+    environment:
+      DATABASE_URL: postgres://drone:drone@postgres:5432/telemetry
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  processor:
+    build: .
+    command: ['node', 'dist/runtime/poller.js']
+    environment:
+      DATABASE_URL: postgres://drone:drone@postgres:5432/telemetry
+      AWS_REGION: eu-west-1
+      # The single variable that separates the local runtime from the cloud one.
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      RAW_BUCKET: drone-telemetry-raw
+      INGEST_QUEUE_URL: http://localstack:4566/000000000000/drone-telemetry-ingest
+      LOG_LEVEL: info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  api:
+    build: .
+    command: ['node', 'dist/runtime/api.js']
+    environment:
+      DATABASE_URL: postgres://drone:drone@postgres:5432/telemetry
+      AWS_ENDPOINT_URL: http://localstack:4566
+      API_PORT: 3000
+      LOG_LEVEL: info
+    ports:
+      - '3000:3000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres-data:

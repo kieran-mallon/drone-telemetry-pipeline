@@ -171,3 +171,48 @@ describe('validateRecord: forward compatibility', () => {
     expect(value.telemetryData).toEqual({});
   });
 });
+
+describe('validateRecord: CSV and JSON must agree on types', () => {
+  /**
+   * Regression tests. Unmodelled telemetry fields used to survive as strings
+   * from CSV and as numbers from JSON, which gave the same reading two
+   * different dedupe hashes and would have stored it twice.
+   */
+  it('normalises unambiguous numeric strings in unmodelled fields', () => {
+    const value = expectOk({
+      ...valid,
+      telemetryData: { altitudeM: '120', speedMps: '0.0', drift: '-5.93' },
+    });
+
+    expect(value.telemetryData['altitudeM']).toBe(120);
+    expect(value.telemetryData['speedMps']).toBe(0);
+    expect(value.telemetryData['drift']).toBe(-5.93);
+  });
+
+  it('normalises boolean strings', () => {
+    const value = expectOk({ ...valid, telemetryData: { payloadAttached: 'true' } });
+    expect(value.telemetryData['payloadAttached']).toBe(true);
+  });
+
+  it('leaves identifier-shaped strings alone', () => {
+    const value = expectOk({
+      ...valid,
+      telemetryData: { firmware: '007', batchRef: '1e5', route: 'BT1-BT9' },
+    });
+
+    // Turning a zero-padded serial into an integer is a worse error than
+    // leaving a number as text.
+    expect(value.telemetryData['firmware']).toBe('007');
+    expect(value.telemetryData['batchRef']).toBe('1e5');
+    expect(value.telemetryData['route']).toBe('BT1-BT9');
+  });
+
+  it('normalises inside nested telemetry structures', () => {
+    const value = expectOk({
+      ...valid,
+      telemetryData: { motors: [{ rpm: '4200' }, { rpm: '4180' }] },
+    });
+
+    expect(value.telemetryData['motors']).toEqual([{ rpm: 4200 }, { rpm: 4180 }]);
+  });
+});
