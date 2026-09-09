@@ -8,12 +8,34 @@ export function createS3Client(config: Config): S3Client {
 
   return new S3Client({
     region: config.awsRegion,
-    /**
-     * Present locally, absent in a real deployment. Path-style addressing is
-     * required because local S3 servers serve buckets as a path on one host
-     * rather than as bucket.host virtual subdomains.
-     */
-    ...(endpoint !== undefined ? { endpoint, forcePathStyle: true } : {}),
+
+    ...(endpoint !== undefined
+      ? {
+          /**
+           * Present locally, absent in a real deployment. Path-style addressing
+           * is required because local S3 servers serve buckets as a path on one
+           * host rather than as bucket.host virtual subdomains.
+           */
+          endpoint,
+          forcePathStyle: true,
+
+          /**
+           * Only send a checksum when the operation requires one.
+           *
+           * Since v3.729 the SDK defaults to WHEN_SUPPORTED, which attaches an
+           * x-amz-checksum-crc32 header to ordinary PutObject calls. Real S3
+           * expects it; several S3-compatible stores reject it outright, and it
+           * has broken uploads against MinIO, Cloudflare R2 and others.
+           *
+           * Narrowed to the local case on purpose. Against real AWS the default
+           * stands, because those checksums are genuine end-to-end integrity
+           * protection and worth having. This is a compatibility shim for
+           * emulators, not a considered opinion about checksums.
+           */
+          requestChecksumCalculation: 'WHEN_REQUIRED' as const,
+          responseChecksumValidation: 'WHEN_REQUIRED' as const,
+        }
+      : {}),
   });
 }
 
