@@ -439,6 +439,23 @@ tests then assert the properties a mock cannot reach:
 - Keyset pagination walks the full result set with no duplicates and no gaps
 - Migrations are idempotent
 
+### Guards that are not tests
+
+`npm run check:deps` compiles the application and asserts that every module it
+imports at runtime is declared in `dependencies` rather than `devDependencies`.
+
+It exists because that exact mistake took the local stack down: the runtime
+image installs with `--omit=dev`, so a dev dependency reached for at runtime is
+simply absent and the container crash-loops. Typecheck could not see it, because
+the package is installed in development. The tests could not see it, because
+they run with everything installed. It is only visible at the boundary between
+the dependency graph and the deployment.
+
+It reads the compiled output rather than the source, because `import type` is
+erased at compile time and is therefore safe, and only the compiled output knows
+the difference. It runs in CI on every push, and it has been verified by
+reintroducing the original bug and watching it fail.
+
 ### What I would add next
 
 - **A real end-to-end test.** Put a file in S3, wait for the row to appear in

@@ -21,7 +21,8 @@
     "seed": "tsx scripts/seed.ts",
     "send:file": "tsx scripts/send-sample.ts file",
     "send:message": "tsx scripts/send-sample.ts message",
-    "package:lambda": "node scripts/package-lambda.mjs"
+    "package:lambda": "node scripts/package-lambda.mjs",
+    "check:deps": "node scripts/check-runtime-deps.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1128.0",

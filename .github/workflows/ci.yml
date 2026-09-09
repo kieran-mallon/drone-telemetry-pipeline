@@ -36,6 +36,14 @@ jobs:
       - name: Unit tests
         run: npm run test:unit
 
+      # Catches a runtime import of a devDependency, which typecheck cannot see
+      # (the package is installed in development) and the tests cannot see
+      # (they run with everything installed). It is only visible at the
+      # boundary between the dependency graph and the deployment, and it shows
+      # up as a crash-looping container.
+      - name: Runtime dependency check
+        run: npm run check:deps
+
       # Proves the deployable artefact actually builds and exports a handler.
       # A bundling mistake is invisible until deploy time otherwise.
       - name: Build the Lambda bundle
