@@ -26,7 +26,16 @@ const booleanFromEnv = z.preprocess(
 );
 
 const configSchema = z.object({
-  databaseUrl: z.string().min(1, { error: 'DATABASE_URL is required' }),
+  /**
+   * Optional at this layer, required by anything that opens a connection.
+   *
+   * The uploader and seed scripts talk only to object storage and the queue, so
+   * demanding a database URL from them was a false requirement that made them
+   * fail for a reason that had nothing to do with what they do. Services still
+   * fail fast, because they build a connection pool during startup and
+   * `createPool` rejects a missing URL there.
+   */
+  databaseUrl: z.string().min(1).optional(),
 
   awsRegion: z.string().default('eu-west-1'),
   /**
@@ -88,28 +97,46 @@ const configSchema = z.object({
 
 export type Config = z.infer<typeof configSchema>;
 
+/**
+ * The environment variable behind each field.
+ *
+ * Single-sourced so the reader and the error formatter cannot disagree, and so
+ * a validation failure names `DATABASE_URL` (which you can act on) rather than
+ * `databaseUrl` (which does not exist anywhere you can set it). A config error
+ * that does not tell you which variable to fix is only half an error message.
+ */
+const ENV_KEYS = {
+  databaseUrl: 'DATABASE_URL',
+  awsRegion: 'AWS_REGION',
+  awsEndpointUrl: 'AWS_ENDPOINT_URL',
+  s3EndpointUrl: 'S3_ENDPOINT_URL',
+  sqsEndpointUrl: 'SQS_ENDPOINT_URL',
+  rawBucket: 'RAW_BUCKET',
+  ingestQueueName: 'INGEST_QUEUE_NAME',
+  ingestQueueUrl: 'INGEST_QUEUE_URL',
+  batchSize: 'BATCH_SIZE',
+  maxRecordsPerObject: 'MAX_RECORDS_PER_OBJECT',
+  insertChunkSize: 'INSERT_CHUNK_SIZE',
+  logLevel: 'LOG_LEVEL',
+  logPretty: 'LOG_PRETTY',
+  apiPort: 'API_PORT',
+  apiHost: 'API_HOST',
+} as const satisfies Record<keyof Config, string>;
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const result = configSchema.safeParse({
-    databaseUrl: env['DATABASE_URL'],
-    awsRegion: env['AWS_REGION'],
-    awsEndpointUrl: env['AWS_ENDPOINT_URL'],
-    s3EndpointUrl: env['S3_ENDPOINT_URL'],
-    sqsEndpointUrl: env['SQS_ENDPOINT_URL'],
-    rawBucket: env['RAW_BUCKET'],
-    ingestQueueName: env['INGEST_QUEUE_NAME'],
-    ingestQueueUrl: env['INGEST_QUEUE_URL'],
-    batchSize: env['BATCH_SIZE'],
-    maxRecordsPerObject: env['MAX_RECORDS_PER_OBJECT'],
-    insertChunkSize: env['INSERT_CHUNK_SIZE'],
-    logLevel: env['LOG_LEVEL'],
-    logPretty: env['LOG_PRETTY'],
-    apiPort: env['API_PORT'],
-    apiHost: env['API_HOST'],
-  });
+  const result = configSchema.safeParse(
+    Object.fromEntries(
+      Object.entries(ENV_KEYS).map(([field, variable]) => [field, env[variable]]),
+    ),
+  );
 
   if (!result.success) {
     const detail = result.error.issues
-      .map((issue) => `  ${issue.path.join('.') || '(root)'}: ${issue.message}`)
+      .map((issue) => {
+        const field = String(issue.path[0] ?? '');
+        const variable = ENV_KEYS[field as keyof typeof ENV_KEYS] ?? (field === '' ? '(root)' : field);
+        return `  ${variable}: ${issue.message}`;
+      })
       .join('\n');
     throw new Error(`Invalid configuration:\n${detail}`);
   }
@@ -125,4 +152,18 @@ export function s3Endpoint(config: Config): string | undefined {
 /** The SQS endpoint override, if any. */
 export function sqsEndpoint(config: Config): string | undefined {
   return config.sqsEndpointUrl ?? config.awsEndpointUrl;
+}
+
+/**
+ * The database URL, or a clear failure.
+ *
+ * Called by `createPool`, so every service still fails during startup with a
+ * message naming the variable, while the scripts that never touch a database
+ * are not asked for one.
+ */
+export function requireDatabaseUrl(config: Config): string {
+  if (config.databaseUrl === undefined) {
+    throw new Error('Invalid configuration:\n  DATABASE_URL is required to connect to Postgres');
+  }
+  return config.databaseUrl;
 }

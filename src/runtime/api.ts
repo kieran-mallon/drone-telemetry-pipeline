@@ -1,3 +1,5 @@
+import '../load-env.js';
+
 import Fastify from 'fastify';
 import { z } from 'zod';
 

@@ -9,7 +9,7 @@ runs on a schedule. Every record either becomes a row in `telemetry_events` or a
 row in `telemetry_quarantine` with the reason attached. There is no third
 outcome, and no way for one corrupt record to affect its neighbours.
 
-**Status:** 129 unit tests and 23 integration tests, all passing. The Pulumi program is
+**Status:** 133 unit tests and 23 integration tests, all passing. The Pulumi program is
 typechecked but not deployed. See
 [Honesty about what is and is not proven](#honesty-about-what-is-and-is-not-proven)
 for exactly what has been run and what has not.
@@ -116,7 +116,7 @@ Postgres exists is `src/runtime/dependencies.ts`.
 Three things fall out of that, and they are the reason it was worth the extra
 indirection:
 
-1. **The tests need no mocking library.** 129 unit tests, no Docker, no network,
+1. **The tests need no mocking library.** 133 unit tests, no Docker, no network,
    under a second. The in-memory `EventStore` is 40 lines.
 2. **The transport became a detail.** Supporting both a Lambda and a local
    poller cost about 60 lines each, because neither contains any logic.
@@ -406,7 +406,7 @@ every time-window query for as long as it went unnoticed.
 ## Testing
 
 ```
-tests/unit/          129 tests, ~200ms, no Docker
+tests/unit/          133 tests, ~200ms, no Docker
 tests/integration/    23 tests, real Postgres via Testcontainers (needs Docker)
 ```
 
@@ -505,7 +505,7 @@ Worth being explicit, because "it works" should mean something specific.
 
 **Run, and green:**
 
-- The 129 unit tests. All core logic, and the handler including every failure
+- The 133 unit tests. All core logic, and the handler including every failure
   path, against in-memory doubles.
 - The 23 integration tests, against a real Postgres started by Testcontainers.
   These earned their keep: they caught a bug where NUMERIC columns came back as
@@ -585,7 +585,9 @@ scripts/         Seed generator, sample uploader, Lambda bundler, LocalStack ini
 ## Configuration
 
 Copy `.env.example` to `.env` to run the scripts, processor or API on the host;
-Compose sets these for the containers. The variables worth knowing are
+Compose sets these for the containers. The file is loaded automatically via
+Node's built-in `process.loadEnvFile`, and real environment variables win over
+it, so Docker and CI are unaffected. The variables worth knowing are
 **`S3_ENDPOINT_URL`** and **`SQS_ENDPOINT_URL`**: set to the local servers
 locally, unset in a real deployment so the SDK resolves real AWS. They are the
 entire difference between the two runtimes.
@@ -597,6 +599,19 @@ local queue server whose URL format is its own business.
 Configuration is parsed and validated with Zod at boot, so a missing or
 malformed variable fails immediately with a readable message rather than
 surfacing as `undefined` in a connection string three minutes into a batch.
+
+Two details worth knowing, both of which started as bugs.
+
+**`DATABASE_URL` is required by whatever opens a connection, not by the config
+loader.** The uploader and seed scripts talk only to object storage and the
+queue, and demanding a database URL from them made them fail for a reason
+unrelated to anything they do. Services still fail fast, because they build a
+connection pool during startup.
+
+**Validation errors name the environment variable, not the field.** They used to
+say `databaseUrl: Invalid input`, which is a TypeScript property name and not
+something anybody can set. An error that does not tell you which variable to fix
+is only half an error message.
 
 `LOG_PRETTY` is worth one line of explanation, because getting it wrong broke
 the Compose stack. Pretty printing is a property of **who is reading**, not of

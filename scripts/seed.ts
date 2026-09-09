@@ -8,6 +8,8 @@
  * real drone batch would. Useful for seeing the batching, deduplication and
  * quarantine behaviour at a size where the numbers in the logs mean something.
  */
+import '../src/load-env.js';
+
 import { PutObjectCommand } from '@aws-sdk/client-s3';
 
 import { createS3Client } from '../src/adapters/s3/object-store.js';

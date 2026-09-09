@@ -1,3 +1,5 @@
+import '../load-env.js';
+
 import { DeleteMessageBatchCommand, ReceiveMessageCommand } from '@aws-sdk/client-sqs';
 
 import { createSqsClient, resolveQueueUrl } from '../adapters/sqs/queue.js';

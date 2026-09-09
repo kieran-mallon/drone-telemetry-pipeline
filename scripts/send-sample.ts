@@ -9,6 +9,8 @@
  * notification lands on SQS, the processor wakes up. The message path proves
  * the same pipeline handles records that never touch S3 at all.
  */
+import '../src/load-env.js';
+
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 

@@ -1,6 +1,6 @@
 import pg from 'pg';
 
-import type { Config } from '../../config.js';
+import { requireDatabaseUrl, type Config } from '../../config.js';
 
 const { Pool, types } = pg;
 
@@ -35,7 +35,10 @@ export function createPool(config: Config): PostgresPool {
   registerTypeParsers();
 
   return new Pool({
-    connectionString: config.databaseUrl,
+    // Throws with a message naming DATABASE_URL. Services build their pool
+    // during startup, so they still fail fast; scripts that never open a
+    // connection are never asked for it.
+    connectionString: requireDatabaseUrl(config),
 
     /**
      * Deliberately small. Under Lambda each concurrent invocation is its own

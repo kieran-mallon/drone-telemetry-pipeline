@@ -1,12 +1,36 @@
 import { describe, expect, it } from 'vitest';
 
-import { loadConfig } from '../../src/config.js';
+import { loadConfig, requireDatabaseUrl } from '../../src/config.js';
 
 const base = { DATABASE_URL: 'postgres://u:p@localhost:5432/db' };
 
 describe('loadConfig', () => {
-  it('fails fast and says which variable is wrong', () => {
-    expect(() => loadConfig({} as NodeJS.ProcessEnv)).toThrow(/DATABASE_URL is required/);
+  /**
+   * The error has to name the environment variable, not the internal field.
+   * It used to say "databaseUrl: Invalid input: expected string, received
+   * undefined", which is the name of a TypeScript property and not something
+   * anyone can set. A config error that does not tell you which variable to fix
+   * is only half an error message.
+   */
+  it('names the environment variable, not the internal field', () => {
+    expect(() => loadConfig({ ...base, BATCH_SIZE: '999' } as NodeJS.ProcessEnv)).toThrow(
+      /BATCH_SIZE/,
+    );
+    expect(() => loadConfig({ ...base, BATCH_SIZE: '999' } as NodeJS.ProcessEnv)).not.toThrow(
+      /batchSize/,
+    );
+  });
+
+  it('reports every bad variable at once, not just the first', () => {
+    let message = '';
+    try {
+      loadConfig({ ...base, BATCH_SIZE: '999', LOG_LEVEL: 'chatty' } as NodeJS.ProcessEnv);
+    } catch (error) {
+      message = (error as Error).message;
+    }
+
+    expect(message).toMatch(/BATCH_SIZE/);
+    expect(message).toMatch(/LOG_LEVEL/);
   });
 
   it('applies defaults for everything optional', () => {
@@ -24,6 +48,28 @@ describe('loadConfig', () => {
 
   it('rejects a log level Pino would not understand', () => {
     expect(() => loadConfig({ ...base, LOG_LEVEL: 'chatty' } as NodeJS.ProcessEnv)).toThrow();
+  });
+});
+
+describe('the database URL is required only where it is used', () => {
+  /**
+   * The uploader and seed scripts talk only to object storage and the queue.
+   * Demanding a database URL from them made them fail for a reason unrelated to
+   * anything they do, which is exactly what happened the first time the local
+   * stack was demonstrated.
+   */
+  it('loads without DATABASE_URL, for the scripts that never open a connection', () => {
+    expect(() => loadConfig({} as NodeJS.ProcessEnv)).not.toThrow();
+    expect(loadConfig({} as NodeJS.ProcessEnv).databaseUrl).toBeUndefined();
+  });
+
+  it('fails with a message naming DATABASE_URL when a connection is actually needed', () => {
+    const config = loadConfig({} as NodeJS.ProcessEnv);
+    expect(() => requireDatabaseUrl(config)).toThrow(/DATABASE_URL is required/);
+  });
+
+  it('returns the URL when it is set', () => {
+    expect(requireDatabaseUrl(loadConfig(base as NodeJS.ProcessEnv))).toBe(base.DATABASE_URL);
   });
 });
 
