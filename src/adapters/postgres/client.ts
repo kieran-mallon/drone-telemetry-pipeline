@@ -4,18 +4,36 @@ import type { Config } from '../../config.js';
 
 const { Pool, types } = pg;
 
+/** Postgres OID for NUMERIC. */
+const NUMERIC_OID = 1700;
+
 /**
- * node-postgres returns NUMERIC as a string, because a Postgres NUMERIC can
- * hold values that lose precision as a JavaScript number. battery_pct is
- * NUMERIC(5,2), which is comfortably inside the safe integer range once scaled,
- * so parsing it here keeps the API returning numbers rather than strings.
- * OID 1700 is NUMERIC.
+ * Teach node-postgres to return NUMERIC as a number.
+ *
+ * By default it returns a string, because a Postgres NUMERIC can hold values
+ * that lose precision as a JavaScript double. `battery_pct` is NUMERIC(5,2),
+ * which is nowhere near that boundary, so a string here just means the API
+ * serves {"battery_pct": "87.50"} and every consumer has to remember to coerce.
+ *
+ * This is an explicit function rather than a side effect of importing this
+ * module, and an integration test is why. The registration used to run at
+ * import time, so any pool created without importing this file, which is
+ * exactly what the test helper did, silently got strings back. Correctness that
+ * depends on which modules happen to have been imported is not correctness.
+ *
+ * Note that `setTypeParser` mutates pg's process-global registry, so this
+ * affects every pool in the process. That is fine, and intended, but it is the
+ * reason it is called from one place.
  */
-types.setTypeParser(1700, (value) => (value === null ? null : Number(value)));
+export function registerTypeParsers(): void {
+  types.setTypeParser(NUMERIC_OID, (value) => (value === null ? null : Number(value)));
+}
 
 export type PostgresPool = pg.Pool;
 
 export function createPool(config: Config): PostgresPool {
+  registerTypeParsers();
+
   return new Pool({
     connectionString: config.databaseUrl,
 
